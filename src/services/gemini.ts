@@ -53,6 +53,7 @@ export async function analyzeIngredients(
         - Missing 'supporting': -10 points penalty
         - Missing 'optional': 0 penalty
       - Final score should also consider cuisine match, difficulty, and prep time.
+    - AVAILABLE INGREDIENTS USED: For each recipe, list the 'availableIngredientsUsed' (array of strings) that were found in the image or manual list and are used in this recipe.
     - MISSING INGREDIENTS: Identify 'missingIngredients' (array of strings) for each recipe. Every item in this list MUST correspond to one of the names in the 'ingredients' array for that recipe. Only include items that are NOT in the user's available ingredients list and are NOT common pantry staples (like salt, water, oil).
     Return JSON.`,
   });
@@ -92,6 +93,7 @@ export async function analyzeIngredients(
                 difficulty: { type: Type.STRING, enum: ["Easy", "Medium", "Hard"] },
                 cuisine: { type: Type.STRING },
                 score: { type: Type.NUMBER },
+                availableIngredientsUsed: { type: Type.ARRAY, items: { type: Type.STRING } },
                 missingIngredients: { type: Type.ARRAY, items: { type: Type.STRING } },
                 ingredients: { 
                   type: Type.ARRAY, 
@@ -121,7 +123,7 @@ export async function analyzeIngredients(
                 appearance: { type: Type.STRING },
                 imagePrompt: { type: Type.STRING },
               },
-              required: ["id", "title", "description", "prepTime", "prepTimeMinutes", "cookTime", "cookTimeMinutes", "difficulty", "cuisine", "ingredients", "instructions", "servings", "nutrition", "appearance", "imagePrompt", "score", "missingIngredients"],
+              required: ["id", "title", "description", "prepTime", "prepTimeMinutes", "cookTime", "cookTimeMinutes", "difficulty", "cuisine", "ingredients", "instructions", "servings", "nutrition", "appearance", "imagePrompt", "score", "availableIngredientsUsed", "missingIngredients"],
             },
           },
         },

@@ -21,6 +21,7 @@ export interface Recipe {
   difficulty: 'Easy' | 'Medium' | 'Hard';
   cuisine: string;
   ingredients: IngredientItem[];
+  availableIngredientsUsed: string[];
   missingIngredients: string[];
   instructions: string[];
   servings: number;

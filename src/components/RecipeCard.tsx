@@ -70,9 +70,24 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ recipe, onClick, isFavor
           </h3>
         </div>
         
-        <p className="text-neutral-500 text-sm line-clamp-2 mb-6 leading-relaxed">
+        <p className="text-neutral-500 text-sm line-clamp-2 mb-4 leading-relaxed">
           {recipe.description}
         </p>
+
+        {recipe.availableIngredientsUsed && recipe.availableIngredientsUsed.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-6">
+            {recipe.availableIngredientsUsed.slice(0, 3).map((ing, i) => (
+              <span key={i} className="text-[9px] font-bold uppercase tracking-widest bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-md border border-emerald-100">
+                {ing}
+              </span>
+            ))}
+            {recipe.availableIngredientsUsed.length > 3 && (
+              <span className="text-[9px] font-bold uppercase tracking-widest bg-neutral-50 text-neutral-400 px-2 py-0.5 rounded-md">
+                +{recipe.availableIngredientsUsed.length - 3} more
+              </span>
+            )}
+          </div>
+        )}
         
         <div className="flex items-center gap-4 text-neutral-400 text-xs font-medium">
           <div className="flex items-center gap-1.5">

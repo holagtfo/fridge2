@@ -568,6 +568,17 @@ export default function App() {
 
               <p className="text-neutral-500 text-lg leading-relaxed">{selectedRecipe.description}</p>
 
+              {selectedRecipe.availableIngredientsUsed && selectedRecipe.availableIngredientsUsed.length > 0 && (
+                <div className="bg-emerald-50 rounded-2xl p-4 border border-emerald-100 flex flex-wrap gap-2">
+                  <span className="w-full text-[10px] font-bold uppercase tracking-widest text-emerald-600 mb-1">Used from your fridge</span>
+                  {selectedRecipe.availableIngredientsUsed.map((ing, i) => (
+                    <span key={i} className="bg-white px-3 py-1 rounded-xl text-xs font-bold text-emerald-700 shadow-sm border border-emerald-100">
+                      {ing}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <div className="grid grid-cols-3 gap-4 py-6 border-y border-black/5">
                 <div className="text-center space-y-1">
                   <div className="text-xs font-bold uppercase tracking-widest text-neutral-400">Match Score</div>
