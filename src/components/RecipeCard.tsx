@@ -44,8 +44,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ recipe, onClick, isFavor
             {recipe.difficulty}
           </span>
           {recipe.score && (
-            <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-black/40 text-white backdrop-blur-md flex items-center gap-1">
-              <Sparkles className="w-3 h-3 fill-current text-amber-400" />
+            <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-neutral-100 text-neutral-600 border border-black/5">
               {Math.round((!recipe.missingIngredients || recipe.missingIngredients.length === 0) ? 100 : recipe.score)}% Match
             </span>
           )}

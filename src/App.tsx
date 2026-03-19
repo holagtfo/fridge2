@@ -41,10 +41,32 @@ export default function App() {
         // Find recipes that still need real images
         const recipesToUpdate = result.recipes.filter(r => r.imageUrl?.startsWith('https://loremflickr.com'));
         
-        // Generate images in parallel
-        const generationPromises = recipesToUpdate.map(async (recipe) => {
+        // Prioritize selected recipe if it's in the list
+        const sortedRecipes = [...recipesToUpdate].sort((a, b) => {
+          if (selectedRecipe && a.id === selectedRecipe.id) return -1;
+          if (selectedRecipe && b.id === selectedRecipe.id) return 1;
+          return 0;
+        });
+        
+        // Generate images and update state individually for faster feedback
+        const generationPromises = sortedRecipes.map(async (recipe) => {
           try {
             const newImageUrl = await generateRecipeImage(recipe);
+            
+            // Update the result state immediately for this recipe
+            setResult(prev => {
+              if (!prev) return null;
+              const newRecipes = prev.recipes.map(r => 
+                r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
+              );
+              return { ...prev, recipes: newRecipes };
+            });
+
+            // If this is the currently selected recipe, update it too
+            if (selectedRecipe && recipe.id === selectedRecipe.id) {
+              setSelectedRecipe(prev => prev ? { ...prev, imageUrl: newImageUrl } : null);
+            }
+
             return { id: recipe.id, imageUrl: newImageUrl };
           } catch (error) {
             console.error(`Image generation failed for ${recipe.title}:`, error);
@@ -52,24 +74,7 @@ export default function App() {
           }
         });
 
-        const updates = await Promise.all(generationPromises);
-        
-        setResult(prev => {
-          if (!prev) return null;
-          const newRecipes = prev.recipes.map(r => {
-            const update = updates.find(u => u?.id === r.id);
-            return update ? { ...r, imageUrl: update.imageUrl } : r;
-          });
-          return { ...prev, recipes: newRecipes };
-        });
-
-        // Also update selected recipe if it's one of the ones we just updated
-        if (selectedRecipe) {
-          const update = updates.find(u => u?.id === selectedRecipe.id);
-          if (update) {
-            setSelectedRecipe(prev => prev ? { ...prev, imageUrl: update.imageUrl } : null);
-          }
-        }
+        await Promise.all(generationPromises);
       }
     };
 
