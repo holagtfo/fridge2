@@ -1,0 +1,5 @@
+{
+  "name": "SnapChef: Ingredient to Recipe",
+  "description": "Take a photo of your food ingredients and get instant recipe suggestions powered by Gemini AI.",
+  "requestFramePermissions": ["camera"]
+}
