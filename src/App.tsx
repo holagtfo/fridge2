@@ -3,7 +3,6 @@ import { Camera as CameraIcon, Upload, ChefHat, Search, ArrowLeft, UtensilsCross
 import { motion, AnimatePresence } from 'motion/react';
 import { Camera } from './components/Camera';
 import { RecipeCard } from './components/RecipeCard';
-import { analyzeIngredients, generateRecipeImage } from './services/gemini';
 import { Recipe, Ingredient, AnalysisResult } from './types';
 
 export default function App() {
@@ -37,71 +36,109 @@ export default function App() {
 
   useEffect(() => {
     const generateAllImages = async () => {
-      if (result && result.recipes.some(r => r.imageUrl?.startsWith('https://loremflickr.com'))) {
-        // Find recipes that still need real images
-        const recipesToUpdate = result.recipes.filter(r => r.imageUrl?.startsWith('https://loremflickr.com'));
-        
-        // Prioritize selected recipe if it's in the list
-        const sortedRecipes = [...recipesToUpdate].sort((a, b) => {
-          if (selectedRecipe && a.id === selectedRecipe.id) return -1;
-          if (selectedRecipe && b.id === selectedRecipe.id) return 1;
-          return 0;
-        });
-        
-        // Generate images and update state individually for faster feedback
-        const generationPromises = sortedRecipes.map(async (recipe) => {
-          try {
-            const newImageUrl = await generateRecipeImage(recipe);
-            
-            // Update the result state immediately for this recipe
-            setResult(prev => {
-              if (!prev) return null;
-              const newRecipes = prev.recipes.map(r => 
-                r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
-              );
-              return { ...prev, recipes: newRecipes };
-            });
+      if (!result || !result.recipes?.length) return;
 
-            // If this is the currently selected recipe, update it too
-            if (selectedRecipe && recipe.id === selectedRecipe.id) {
-              setSelectedRecipe(prev => prev ? { ...prev, imageUrl: newImageUrl } : null);
-            }
+      const recipesToUpdate = result.recipes.filter(
+        (r) => !r.imageUrl || r.imageUrl.startsWith('https://loremflickr.com')
+      );
 
-            return { id: recipe.id, imageUrl: newImageUrl };
-          } catch (error) {
-            console.error(`Image generation failed for ${recipe.title}:`, error);
-            return null;
+      if (recipesToUpdate.length === 0) return;
+
+      const sortedRecipes = [...recipesToUpdate].sort((a, b) => {
+        if (selectedRecipe && a.id === selectedRecipe.id) return -1;
+        if (selectedRecipe && b.id === selectedRecipe.id) return 1;
+        return 0;
+      });
+
+      const generationPromises = sortedRecipes.map(async (recipe) => {
+        try {
+          const res = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipe }),
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            throw new Error(data?.error || 'Failed to generate image');
           }
-        });
 
-        await Promise.all(generationPromises);
-      }
+          const newImageUrl = data.imageUrl;
+
+          setResult((prev) => {
+            if (!prev) return null;
+            const newRecipes = prev.recipes.map((r) =>
+              r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
+            );
+            return { ...prev, recipes: newRecipes };
+          });
+
+          if (selectedRecipe && recipe.id === selectedRecipe.id) {
+            setSelectedRecipe((prev) =>
+              prev ? { ...prev, imageUrl: newImageUrl } : null
+            );
+          }
+
+          return { id: recipe.id, imageUrl: newImageUrl };
+        } catch (error) {
+          console.error(`Image generation failed for ${recipe.title}:`, error);
+          return null;
+        }
+      });
+
+      await Promise.all(generationPromises);
     };
 
     generateAllImages();
-  }, [result?.recipes]);
+  }, [result?.recipes, selectedRecipe]);
 
   useEffect(() => {
-    // This effect is now just for tracking if the current selected recipe is still generating
-    if (selectedRecipe && selectedRecipe.imageUrl?.startsWith('https://loremflickr.com')) {
+    if (selectedRecipe && (!selectedRecipe.imageUrl || selectedRecipe.imageUrl.startsWith('https://loremflickr.com'))) {
       setIsGeneratingImage(true);
     } else {
       setIsGeneratingImage(false);
     }
   }, [selectedRecipe]);
 
-  const handleCapture = async (base64: string | null, currentManual: string[] = manualIngredients) => {
+  const handleCapture = async (
+    base64: string | null,
+    currentManual: string[] = manualIngredients
+  ) => {
     setShowCamera(false);
+
+    const finalImage = base64 || imagePreview;
+
     if (base64) setImagePreview(base64);
+    if (!finalImage) {
+      alert('No image found. Please upload or capture an image first.');
+      return;
+    }
+
     setIsAnalyzing(true);
     setSelectedRecipe(null);
-    
+
     try {
-      const data = await analyzeIngredients(base64 || imagePreview, currentManual);
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: finalImage,
+          manualIngredients: currentManual,
+          servings: recipeServings,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to analyze ingredients');
+      }
+
       setResult(data);
-    } catch (error) {
-      console.error("Analysis failed:", error);
-      alert("Failed to analyze ingredients. Please try again.");
+    } catch (error: any) {
+      console.error('Analysis failed:', error);
+      alert(error?.message || 'Failed to analyze ingredients. Please try again.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -115,19 +152,12 @@ export default function App() {
 
   const filteredRecipes = useMemo(() => {
     const recipes = viewingFavorites ? favorites : (result?.recipes || []);
-    
-    // Difficulty map for sorting
-    const difficultyMap: Record<string, number> = {
-      'Easy': 1,
-      'Medium': 2,
-      'Hard': 3
-    };
 
     return recipes
       .filter(recipe => {
         const difficultyMatch = difficultyFilter === 'All' || recipe.difficulty === difficultyFilter;
         const cuisineMatch = cuisineFilter === 'All' || recipe.cuisine === cuisineFilter;
-        
+
         let prepMatch = true;
         if (prepTimeFilter === '< 15 mins') prepMatch = recipe.prepTimeMinutes < 15;
         else if (prepTimeFilter === '15-30 mins') prepMatch = recipe.prepTimeMinutes >= 15 && recipe.prepTimeMinutes <= 30;
@@ -156,11 +186,10 @@ export default function App() {
     if (sortedMissing.length === 0) return null;
 
     const topIngredients = sortedMissing.map(([name]) => name);
-    
-    // Count how many recipes would be unlocked if we had these top ingredients
+
     const unlockedCount = result.recipes.filter(recipe => {
-      if (recipe.missingIngredients.length === 0) return false; // Already unlocked
-      return recipe.missingIngredients.every(ing => 
+      if (recipe.missingIngredients.length === 0) return false;
+      return recipe.missingIngredients.every(ing =>
         topIngredients.includes(ing.toLowerCase().trim())
       );
     }).length;
@@ -190,7 +219,6 @@ export default function App() {
       const updated = [...manualIngredients, newIngredient.trim()];
       setManualIngredients(updated);
       setNewIngredient('');
-      // If we already have results, we might want to re-analyze automatically or show a button
     }
   };
 
@@ -221,7 +249,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-neutral-900 font-sans selection:bg-emerald-100 selection:text-emerald-900">
-      {/* Header */}
       <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-black/5 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2 cursor-pointer" onClick={reset}>
           <div className="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-200">
@@ -229,9 +256,9 @@ export default function App() {
           </div>
           <h1 className="text-xl font-bold tracking-tight">SnapChef</h1>
         </div>
-        
+
         <div className="flex items-center gap-4">
-          <button 
+          <button
             onClick={() => {
               setViewingFavorites(!viewingFavorites);
               setResult(null);
@@ -245,7 +272,7 @@ export default function App() {
             <span className="hidden sm:inline">Favorites</span>
           </button>
           {(result || viewingFavorites) && !selectedRecipe && (
-            <button 
+            <button
               onClick={reset}
               className="text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors"
             >
@@ -258,7 +285,7 @@ export default function App() {
       <main className="max-w-2xl mx-auto px-6 py-12">
         <AnimatePresence mode="wait">
           {!result && !isAnalyzing && !selectedRecipe && !viewingFavorites && (
-            <motion.div 
+            <motion.div
               key="landing"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -275,7 +302,7 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-4">
-                <button 
+                <button
                   onClick={() => setShowCamera(true)}
                   className="group relative overflow-hidden bg-neutral-900 text-white rounded-3xl p-8 flex flex-col items-center gap-4 shadow-2xl hover:bg-black transition-all"
                   id="open-camera-btn"
@@ -304,7 +331,7 @@ export default function App() {
           )}
 
           {isAnalyzing && (
-            <motion.div 
+            <motion.div
               key="analyzing"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -313,10 +340,10 @@ export default function App() {
             >
               <div className="relative">
                 {imagePreview ? (
-                  <img 
-                    src={imagePreview} 
-                    className="w-48 h-48 object-cover rounded-3xl opacity-50 grayscale blur-sm" 
-                    alt="Preview" 
+                  <img
+                    src={imagePreview}
+                    className="w-48 h-48 object-cover rounded-3xl opacity-50 grayscale blur-sm"
+                    alt="Preview"
                   />
                 ) : (
                   <div className="w-48 h-48 bg-neutral-100 rounded-3xl flex items-center justify-center">
@@ -339,7 +366,7 @@ export default function App() {
           )}
 
           {(result || viewingFavorites) && !selectedRecipe && (
-            <motion.div 
+            <motion.div
               key="results"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -362,15 +389,15 @@ export default function App() {
                     {result?.ingredients
                       .filter(ing => !manualIngredients.some(m => m.toLowerCase() === ing.name.toLowerCase()))
                       .map((ing, i) => (
-                      <span 
-                        key={i}
-                        className="bg-white border border-black/5 px-4 py-2 rounded-2xl text-sm font-medium shadow-sm"
-                      >
-                        {ing.name}
-                      </span>
-                    ))}
+                        <span
+                          key={i}
+                          className="bg-white border border-black/5 px-4 py-2 rounded-2xl text-sm font-medium shadow-sm"
+                        >
+                          {ing.name}
+                        </span>
+                      ))}
                     {manualIngredients.map((ing, i) => (
-                      <span 
+                      <span
                         key={`manual-${i}`}
                         className="bg-emerald-50 border border-emerald-100 text-emerald-700 px-4 py-2 rounded-2xl text-sm font-bold shadow-sm flex items-center gap-2"
                       >
@@ -382,21 +409,20 @@ export default function App() {
                     ))}
                   </div>
 
-                  {/* Manual Add Input */}
                   <div className="bg-white rounded-3xl p-6 border border-black/5 shadow-sm space-y-4">
                     <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm">
                       <Plus className="w-4 h-4" />
                       <span>Add missing ingredient</span>
                     </div>
                     <form onSubmit={addManualIngredient} className="flex gap-2">
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={newIngredient}
                         onChange={(e) => setNewIngredient(e.target.value)}
                         placeholder="e.g., Oyster Sauce, Basil..."
                         className="flex-1 bg-neutral-50 border border-black/5 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                       />
-                      <button 
+                      <button
                         type="submit"
                         className="bg-emerald-600 text-white px-6 rounded-2xl font-bold hover:bg-emerald-700 transition-colors"
                       >
@@ -404,7 +430,7 @@ export default function App() {
                       </button>
                     </form>
                     {manualIngredients.length > 0 && (
-                      <button 
+                      <button
                         onClick={() => handleCapture(null)}
                         className="w-full py-3 bg-neutral-900 text-white rounded-2xl font-bold hover:bg-black transition-all flex items-center justify-center gap-2"
                       >
@@ -414,9 +440,8 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Shopping Recommendation */}
                   {shoppingRecommendation && (
-                    <motion.div 
+                    <motion.div
                       initial={{ opacity: 0, scale: 0.95 }}
                       animate={{ opacity: 1, scale: 1 }}
                       className="bg-emerald-600 text-white rounded-3xl p-6 shadow-xl shadow-emerald-200 space-y-3 relative overflow-hidden"
@@ -444,11 +469,10 @@ export default function App() {
                   <h3 className="text-sm font-bold uppercase tracking-widest text-neutral-400">
                     {viewingFavorites ? `${filteredRecipes.length} Saved Recipes` : 'Suggested Recipes'}
                   </h3>
-                  
-                  {/* Filters */}
+
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="relative inline-block">
-                      <select 
+                      <select
                         value={cuisineFilter}
                         onChange={(e) => setCuisineFilter(e.target.value)}
                         className="appearance-none bg-white border border-black/5 rounded-xl px-4 py-2 pr-10 text-[10px] font-bold uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all cursor-pointer"
@@ -459,7 +483,7 @@ export default function App() {
                     </div>
 
                     <div className="relative inline-block">
-                      <select 
+                      <select
                         value={difficultyFilter}
                         onChange={(e) => setDifficultyFilter(e.target.value)}
                         className="appearance-none bg-white border border-black/5 rounded-xl px-4 py-2 pr-10 text-[10px] font-bold uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all cursor-pointer"
@@ -473,7 +497,7 @@ export default function App() {
                     </div>
 
                     <div className="relative inline-block">
-                      <select 
+                      <select
                         value={prepTimeFilter}
                         onChange={(e) => setPrepTimeFilter(e.target.value)}
                         className="appearance-none bg-white border border-black/5 rounded-xl px-4 py-2 pr-10 text-[10px] font-bold uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all cursor-pointer"
@@ -491,10 +515,10 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                   {filteredRecipes.length > 0 ? (
                     filteredRecipes.map((recipe) => (
-                      <RecipeCard 
-                        key={recipe.id} 
-                        recipe={recipe} 
-                        onClick={() => setSelectedRecipe(recipe)} 
+                      <RecipeCard
+                        key={recipe.id}
+                        recipe={recipe}
+                        onClick={() => setSelectedRecipe(recipe)}
                         isFavorite={favorites.some(f => f.id === recipe.id)}
                         onToggleFavorite={(e) => toggleFavorite(recipe, e)}
                       />
@@ -502,7 +526,7 @@ export default function App() {
                   ) : (
                     <div className="col-span-full py-12 text-center bg-neutral-50 rounded-3xl border border-dashed border-neutral-200">
                       <p className="text-neutral-400 text-sm">No recipes match your filters.</p>
-                      <button 
+                      <button
                         onClick={() => { setDifficultyFilter('All'); setCuisineFilter('All'); setPrepTimeFilter('All'); }}
                         className="mt-2 text-emerald-600 text-sm font-medium hover:underline"
                       >
@@ -516,7 +540,7 @@ export default function App() {
           )}
 
           {selectedRecipe && (
-            <motion.div 
+            <motion.div
               key="recipe-detail"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -524,18 +548,18 @@ export default function App() {
               className="space-y-8"
             >
               <div className="flex items-center justify-between">
-                <button 
+                <button
                   onClick={() => setSelectedRecipe(null)}
                   className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors group"
                 >
                   <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
                   <span className="text-sm font-medium">Back to suggestions</span>
                 </button>
-                <button 
+                <button
                   onClick={(e) => toggleFavorite(selectedRecipe, e)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
-                    favorites.some(f => f.id === selectedRecipe.id) 
-                      ? 'bg-rose-500 text-white' 
+                    favorites.some(f => f.id === selectedRecipe.id)
+                      ? 'bg-rose-500 text-white'
                       : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
                   }`}
                 >
@@ -545,14 +569,14 @@ export default function App() {
               </div>
 
               <div className="relative h-72 rounded-3xl overflow-hidden shadow-xl">
-                <img 
+                <img
                   src={selectedRecipe.imageUrl || `https://loremflickr.com/1200/800/${encodeURIComponent(selectedRecipe.title.split(' ').slice(0, 3).join(','))},food/all`}
                   alt={selectedRecipe.title}
                   className={`w-full h-full object-cover transition-all duration-700 ${isGeneratingImage ? 'scale-110 blur-sm opacity-50' : 'scale-100 blur-0 opacity-100'}`}
                   referrerPolicy="no-referrer"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                
+
                 {isGeneratingImage && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/20 backdrop-blur-[2px]">
                     <div className="bg-white/90 backdrop-blur-md px-6 py-4 rounded-2xl shadow-2xl flex flex-col items-center gap-3">
@@ -605,14 +629,14 @@ export default function App() {
                 <div className="text-center space-y-1">
                   <div className="text-xs font-bold uppercase tracking-widest text-neutral-400">Serves</div>
                   <div className="flex items-center justify-center gap-2">
-                    <button 
+                    <button
                       onClick={() => setRecipeServings(Math.max(1, recipeServings - 1))}
                       className="w-6 h-6 rounded-full bg-white border border-black/5 flex items-center justify-center text-neutral-600 hover:bg-emerald-100 hover:text-emerald-600 transition-colors"
                     >
                       -
                     </button>
                     <div className="font-semibold w-4">{recipeServings}</div>
-                    <button 
+                    <button
                       onClick={() => setRecipeServings(Math.min(12, recipeServings + 1))}
                       className="w-6 h-6 rounded-full bg-white border border-black/5 flex items-center justify-center text-neutral-600 hover:bg-emerald-100 hover:text-emerald-600 transition-colors"
                     >
@@ -622,7 +646,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Nutrition Section */}
               {selectedRecipe.nutrition && (
                 <section className="bg-neutral-50 rounded-3xl p-6 border border-black/5 space-y-4">
                   <div className="flex items-center gap-2 text-neutral-900 font-bold">
@@ -664,17 +687,16 @@ export default function App() {
                   <ul className="space-y-3">
                     {selectedRecipe.ingredients.map((ing, i) => {
                       const scaledAmount = (ing.amount / selectedRecipe.servings) * recipeServings;
-                      // Format amount: if it's a whole number, don't show decimal
                       const displayAmount = scaledAmount % 1 === 0 ? scaledAmount : scaledAmount.toFixed(1);
-                      
-                      const isMissing = selectedRecipe.missingIngredients?.some(m => 
-                        ing.name.toLowerCase().includes(m.toLowerCase()) || 
+
+                      const isMissing = selectedRecipe.missingIngredients?.some(m =>
+                        ing.name.toLowerCase().includes(m.toLowerCase()) ||
                         m.toLowerCase().includes(ing.name.toLowerCase())
                       );
 
                       const importanceColors = {
                         core: 'bg-rose-100 text-rose-700',
-                        supporting: 'bg-rose-100 text-rose-700', // Map supporting to core color
+                        supporting: 'bg-rose-100 text-rose-700',
                         optional: 'bg-neutral-100 text-neutral-600'
                       };
 
@@ -709,15 +731,14 @@ export default function App() {
                       <AlertCircle className="w-5 h-5 text-rose-500" />
                       <h3>Shopping List</h3>
                     </div>
-                    
+
                     {['core', 'optional'].map(displayImportance => {
                       const missingInThisCategory = selectedRecipe.missingIngredients.filter(missingName => {
-                        const originalIng = selectedRecipe.ingredients.find(ing => 
-                          ing.name.toLowerCase().includes(missingName.toLowerCase()) || 
+                        const originalIng = selectedRecipe.ingredients.find(ing =>
+                          ing.name.toLowerCase().includes(missingName.toLowerCase()) ||
                           missingName.toLowerCase().includes(ing.name.toLowerCase())
                         );
                         if (!originalIng) return false;
-                        // Map supporting to core
                         const mappedImportance = originalIng.importance === 'supporting' ? 'core' : originalIng.importance;
                         return mappedImportance === displayImportance;
                       });
@@ -731,11 +752,11 @@ export default function App() {
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {missingInThisCategory.map((missingName, i) => {
-                              const originalIng = selectedRecipe.ingredients.find(ing => 
-                                ing.name.toLowerCase().includes(missingName.toLowerCase()) || 
+                              const originalIng = selectedRecipe.ingredients.find(ing =>
+                                ing.name.toLowerCase().includes(missingName.toLowerCase()) ||
                                 missingName.toLowerCase().includes(ing.name.toLowerCase())
                               );
-                              
+
                               const scaledAmount = originalIng ? (originalIng.amount / selectedRecipe.servings) * recipeServings : null;
                               const displayAmount = scaledAmount !== null ? (scaledAmount % 1 === 0 ? scaledAmount : scaledAmount.toFixed(1)) : '';
                               const unit = originalIng?.unit || '';
@@ -774,13 +795,12 @@ export default function App() {
       </main>
 
       {showCamera && (
-        <Camera 
-          onCapture={handleCapture} 
-          onClose={() => setShowCamera(false)} 
+        <Camera
+          onCapture={handleCapture}
+          onClose={() => setShowCamera(false)}
         />
       )}
 
-      {/* Footer */}
       <footer className="mt-20 py-12 border-t border-black/5 text-center">
         <p className="text-neutral-400 text-sm">
           Powered by Gemini AI • Global & Singaporean Cuisine
