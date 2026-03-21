@@ -28,9 +28,10 @@ export default async function handler(req: any, res: any) {
     const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg';
     const base64Data = image.includes(',') ? image.split(',')[1] : image;
 
-    const manualList = Array.isArray(manualIngredients) && manualIngredients.length > 0
-      ? manualIngredients.join(', ')
-      : 'None';
+    const manualList =
+      Array.isArray(manualIngredients) && manualIngredients.length > 0
+        ? manualIngredients.join(', ')
+        : 'None';
 
     const prompt = `
 You are a food ingredient recognition and recipe recommendation assistant.
@@ -43,7 +44,7 @@ Generate recipe suggestions based on the available ingredients.
 Rules:
 - Return ONLY valid JSON
 - Do not wrap the JSON in markdown
-- Each recipe must have a unique "id" string
+- Each recipe must have a unique "id" string (e.g. "recipe_1", "recipe_2")
 - prepTime and cookTime must look like "10 mins"
 - prepTimeMinutes must be a number
 - cuisine must be a fixed cuisine category such as "Chinese", "Italian", "Japanese", "Malay", "Indian", "Western", "Thai", "Korean", "Fusion", "Singaporean"
@@ -53,7 +54,10 @@ Rules:
 - availableIngredientsUsed should list ingredients the user already has
 - score should be 0 to 100
 - servings should be ${servings}
-- imageUrl should be a placeholder string "https://loremflickr.com/1200/800/food"
+- FIX: imageUrl must be unique per recipe using the recipe title words as the search term.
+  Format: "https://loremflickr.com/1200/800/<keyword1>,<keyword2>,food/all"
+  Example for "Tomato Egg Fried Rice": "https://loremflickr.com/1200/800/tomato,egg,food/all"
+  Use 2–3 meaningful words from the recipe title, lowercase, comma-separated.
 
 Return JSON in exactly this shape:
 {
@@ -93,7 +97,7 @@ Return JSON in exactly this shape:
         "carbs": "52",
         "fat": "16"
       },
-      "imageUrl": "https://loremflickr.com/1200/800/food"
+      "imageUrl": "https://loremflickr.com/1200/800/tomato,egg,food/all"
     }
   ]
 }
@@ -142,6 +146,14 @@ Return JSON in exactly this shape:
         error: 'Gemini response missing ingredients or recipes',
       });
     }
+
+    // FIX: Ensure every recipe has a unique id even if Gemini forgets to assign one.
+    // The frontend uses recipe.id as a React key and to track image generation —
+    // duplicate or missing IDs will cause images to be assigned to the wrong recipe.
+    parsed.recipes = parsed.recipes.map((recipe: any, index: number) => ({
+      ...recipe,
+      id: recipe.id && recipe.id.trim() ? recipe.id : `recipe_${index + 1}`,
+    }));
 
     return res.status(200).json(parsed);
   } catch (error: any) {
