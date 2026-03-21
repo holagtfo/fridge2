@@ -5,6 +5,58 @@ import { Camera } from './components/Camera';
 import { RecipeCard } from './components/RecipeCard';
 import { Recipe, Ingredient, AnalysisResult } from './types';
 
+// ---------------------------------------------------------------------------
+// Gemini image generation — runs directly in the browser using VITE_GEMINI_API_KEY.
+// No backend route needed. Uses gemini-2.0-flash-preview-image-generation.
+// ---------------------------------------------------------------------------
+async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error('VITE_GEMINI_API_KEY is not set');
+    return null;
+  }
+
+  const prompt =
+    `Professional food photography of "${recipe.title}", a ${recipe.cuisine} dish. ` +
+    `Close-up shot, beautifully plated on a ceramic dish, soft natural side lighting, ` +
+    `shallow depth of field with blurred background, warm tones, appetising and vibrant colours. ` +
+    `Shot from a 45-degree overhead angle. No text, no people, no watermarks.`;
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error('Gemini image generation failed:', err);
+      return null;
+    }
+
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts ?? [];
+    const imagePart = parts.find((p: any) => p.inlineData?.mimeType?.startsWith('image/'));
+
+    if (!imagePart) {
+      console.error('No image part in Gemini response');
+      return null;
+    }
+
+    return `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+  } catch (err) {
+    console.error(`Image generation error for "${recipe.title}":`, err);
+    return null;
+  }
+}
+
 export default function App() {
   const [showCamera, setShowCamera] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -14,7 +66,6 @@ export default function App() {
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
 
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  // Use a ref for imagePreview so handleCapture never closes over a stale value
   const imagePreviewRef = useRef<string | null>(null);
 
   // Manual Ingredients
@@ -55,16 +106,15 @@ export default function App() {
     );
   }, [result, favorites, selectedRecipeId]);
 
-  // FIX: Only show the generating spinner if there is truly no imageUrl at all.
-  // loremflickr URLs from analyze.ts are treated as valid images — they display
-  // on the dashboard and carry through unchanged to the detail view, so clicking
-  // a recipe card immediately shows the same image with no spinner or regeneration.
+  // Show spinner only when there's truly no imageUrl yet.
+  // loremflickr placeholders from analyze.ts show immediately;
+  // once Gemini finishes, the real image swaps in seamlessly.
   const isGeneratingImage = useMemo(() => {
     if (!selectedRecipe) return false;
-    return !selectedRecipe.imageUrl;
+    return !selectedRecipe.imageUrl || selectedRecipe.imageUrl.startsWith('https://loremflickr.com');
   }, [selectedRecipe]);
 
-  // Pre-compute isFavorite for selected recipe once, not inline 3x in JSX
+  // Pre-compute isFavorite once, not inline 3× in JSX
   const isCurrentFavorite = useMemo(
     () => favorites.some(f => f.id === selectedRecipe?.id),
     [favorites, selectedRecipe]
@@ -74,66 +124,54 @@ export default function App() {
     localStorage.setItem('snapchef_favorites', JSON.stringify(favorites));
   }, [favorites]);
 
-  // Helper: generate image for a single recipe and update result state
+  // Generate image for a single recipe using Gemini directly
   const generateImage = useCallback(async (recipe: Recipe) => {
-    try {
-      const res = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipe }),
-      });
+    const newImageUrl = await generateRecipeImage(recipe);
+    if (!newImageUrl) return null;
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to generate image');
+    setResult(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        recipes: prev.recipes.map(r =>
+          r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
+        ),
+      };
+    });
 
-      const newImageUrl = data.imageUrl;
-
-      setResult(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          recipes: prev.recipes.map(r =>
-            r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
-          ),
-        };
-      });
-
-      return newImageUrl;
-    } catch (err) {
-      console.error(`Image generation failed for ${recipe.title}:`, err);
-      return null;
-    }
+    return newImageUrl;
   }, []);
 
-  // Helper: generate a batch of recipes in parallel
   const generateBatch = useCallback(
     (recipes: Recipe[]) => Promise.all(recipes.map(generateImage)),
     [generateImage]
   );
 
-  // Only queue recipes with no imageUrl at all — loremflickr URLs count as valid
-  // and will not be replaced. Depends on stable recipe ID list so it won't
-  // re-fire on imageUrl updates.
+  // Queue Gemini image generation for every recipe.
+  // loremflickr placeholders get replaced with real AI images in the background.
+  // Selected recipe is always generated first so the detail view loads fast.
   useEffect(() => {
     const generateAllImages = async () => {
       if (!result?.recipes?.length) return;
 
       const toGenerate = result.recipes.filter(
-        r => !r.imageUrl && !generatingRef.current.has(r.id)
+        r =>
+          (!r.imageUrl || r.imageUrl.startsWith('https://loremflickr.com')) &&
+          !generatingRef.current.has(r.id)
       );
 
       if (toGenerate.length === 0) return;
 
-      // Mark all as queued immediately to prevent double-firing
+      // Mark as queued immediately to prevent double-firing
       toGenerate.forEach(r => generatingRef.current.add(r.id));
 
-      // Priority: selected recipe first for a fast detail view load
+      // Selected recipe first for fast detail view
       const priority = toGenerate.filter(r => r.id === selectedRecipeId);
       const rest = toGenerate.filter(r => r.id !== selectedRecipeId);
 
       if (priority.length) await generateBatch(priority);
 
-      // Generate remaining in pairs to avoid hammering the API
+      // Rest in pairs to avoid rate-limiting
       for (let i = 0; i < rest.length; i += 2) {
         await generateBatch(rest.slice(i, i + 2));
       }
@@ -213,7 +251,6 @@ export default function App() {
       .sort((a, b) => (b.score || 0) - (a.score || 0));
   }, [result?.recipes, favorites, viewingFavorites, difficultyFilter, cuisineFilter, prepTimeFilter]);
 
-  // Narrow dependency so shoppingRecommendation doesn't recalculate on imageUrl updates
   const missingIngredientKey = useMemo(
     () => result?.recipes?.map(r => r.missingIngredients.join('|')).join(',') ?? '',
     [result?.recipes]
@@ -663,9 +700,9 @@ export default function App() {
                     <div className="bg-white/90 backdrop-blur-md px-6 py-4 rounded-2xl shadow-2xl flex flex-col items-center gap-3">
                       <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
                       <div className="text-center">
-                        <div className="text-sm font-bold text-neutral-900">Loading Image</div>
+                        <div className="text-sm font-bold text-neutral-900">Generating HD Image</div>
                         <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest mt-0.5">
-                          Just a moment...
+                          Matching your recipe...
                         </div>
                       </div>
                     </div>
