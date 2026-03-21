@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera as CameraIcon, Upload, ChefHat, ArrowLeft, UtensilsCrossed, Sparkles, Loader2, ChevronDown, Plus, X, Heart, Zap, Info, RefreshCw, Users, ShoppingCart, AlertCircle } from 'lucide-react';
+import { Camera as CameraIcon, Upload, ChefHat, ArrowLeft, UtensilsCrossed, Sparkles, Loader2, ChevronDown, Plus, X, Heart, Zap, Info, RefreshCw, ShoppingCart, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Camera } from './components/Camera';
 import { RecipeCard } from './components/RecipeCard';
@@ -10,12 +10,11 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
 
-  // FIX: Store only the selected recipe ID; derive the full object from result
-  // This prevents stale imageUrl bugs when images update in result.recipes
+  // Store only the selected recipe ID; derive the full object from result
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
 
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  // FIX: Use a ref for imagePreview so handleCapture never closes over a stale value
+  // Use a ref for imagePreview so handleCapture never closes over a stale value
   const imagePreviewRef = useRef<string | null>(null);
 
   // Manual Ingredients
@@ -23,12 +22,11 @@ export default function App() {
   const [newIngredient, setNewIngredient] = useState('');
   const [recipeServings, setRecipeServings] = useState<number>(2);
 
-  // FIX: In-UI error state instead of alert()
+  // In-UI error state instead of alert()
   const [error, setError] = useState<string | null>(null);
 
   // Favorites
   const [favorites, setFavorites] = useState<Recipe[]>(() => {
-    // FIX: Wrap in try/catch to handle corrupted localStorage gracefully
     try {
       const saved = localStorage.getItem('snapchef_favorites');
       return saved ? JSON.parse(saved) : [];
@@ -43,16 +41,13 @@ export default function App() {
   const [cuisineFilter, setCuisineFilter] = useState<string>('All');
   const [prepTimeFilter, setPrepTimeFilter] = useState<string>('All');
 
-  // FIX: Track which recipe IDs have already been queued for image generation
-  // so the effect never re-fires for recipes already in-flight or completed
+  // Track which recipe IDs have already been queued for image generation
   const generatingRef = useRef<Set<string>>(new Set());
 
-  // FIX: Derive selectedRecipe from result + selectedRecipeId instead of storing separately.
-  // This means any imageUrl update in result.recipes is automatically reflected here —
-  // no need for a second setSelectedRecipe call, and no stale URL bugs.
+  // Derive selectedRecipe from result + selectedRecipeId.
+  // Any imageUrl update in result.recipes is automatically reflected here.
   const selectedRecipe = useMemo(() => {
     if (!selectedRecipeId) return null;
-    // Check result recipes first, then favorites (for favorited recipes viewed directly)
     return (
       result?.recipes?.find(r => r.id === selectedRecipeId) ??
       favorites.find(f => f.id === selectedRecipeId) ??
@@ -60,13 +55,16 @@ export default function App() {
     );
   }, [result, favorites, selectedRecipeId]);
 
-  // FIX: Derive isGeneratingImage from the recipe's actual imageUrl state
+  // FIX: Only show the generating spinner if there is truly no imageUrl at all.
+  // loremflickr URLs from analyze.ts are treated as valid images — they display
+  // on the dashboard and carry through unchanged to the detail view, so clicking
+  // a recipe card immediately shows the same image with no spinner or regeneration.
   const isGeneratingImage = useMemo(() => {
     if (!selectedRecipe) return false;
-    return !selectedRecipe.imageUrl || selectedRecipe.imageUrl.startsWith('https://loremflickr.com');
+    return !selectedRecipe.imageUrl;
   }, [selectedRecipe]);
 
-  // FIX: Pre-compute isFavorite for selected recipe once, not inline 3× in JSX
+  // Pre-compute isFavorite for selected recipe once, not inline 3x in JSX
   const isCurrentFavorite = useMemo(
     () => favorites.some(f => f.id === selectedRecipe?.id),
     [favorites, selectedRecipe]
@@ -113,17 +111,15 @@ export default function App() {
     [generateImage]
   );
 
-  // FIX: Stable dependency — only re-runs when the set of recipe IDs changes (not on every imageUrl update).
-  // Uses generatingRef so each recipe is queued exactly once.
-  // Prioritises the selected recipe, then processes the rest two at a time.
+  // Only queue recipes with no imageUrl at all — loremflickr URLs count as valid
+  // and will not be replaced. Depends on stable recipe ID list so it won't
+  // re-fire on imageUrl updates.
   useEffect(() => {
     const generateAllImages = async () => {
       if (!result?.recipes?.length) return;
 
       const toGenerate = result.recipes.filter(
-        r =>
-          (!r.imageUrl || r.imageUrl.startsWith('https://loremflickr.com')) &&
-          !generatingRef.current.has(r.id)
+        r => !r.imageUrl && !generatingRef.current.has(r.id)
       );
 
       if (toGenerate.length === 0) return;
@@ -131,7 +127,7 @@ export default function App() {
       // Mark all as queued immediately to prevent double-firing
       toGenerate.forEach(r => generatingRef.current.add(r.id));
 
-      // Priority: selected recipe first for fast detail view load
+      // Priority: selected recipe first for a fast detail view load
       const priority = toGenerate.filter(r => r.id === selectedRecipeId);
       const rest = toGenerate.filter(r => r.id !== selectedRecipeId);
 
@@ -144,7 +140,6 @@ export default function App() {
     };
 
     generateAllImages();
-    // Depend only on the stable list of recipe IDs, not the full recipe objects
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result?.recipes?.map(r => r.id).join(','), generateBatch]);
 
@@ -155,7 +150,6 @@ export default function App() {
     setShowCamera(false);
     setError(null);
 
-    // FIX: Use ref for imagePreview so we always read the latest value
     const finalImage = base64 || imagePreviewRef.current;
 
     if (base64) {
@@ -170,7 +164,6 @@ export default function App() {
 
     setIsAnalyzing(true);
     setSelectedRecipeId(null);
-    // Reset generating tracker for new analysis session
     generatingRef.current = new Set();
 
     try {
@@ -220,8 +213,7 @@ export default function App() {
       .sort((a, b) => (b.score || 0) - (a.score || 0));
   }, [result?.recipes, favorites, viewingFavorites, difficultyFilter, cuisineFilter, prepTimeFilter]);
 
-  // FIX: Narrow dependency so this doesn't recalculate on every imageUrl update.
-  // We only care about missingIngredients, not image URLs.
+  // Narrow dependency so shoppingRecommendation doesn't recalculate on imageUrl updates
   const missingIngredientKey = useMemo(
     () => result?.recipes?.map(r => r.missingIngredients.join('|')).join(',') ?? '',
     [result?.recipes]
@@ -342,7 +334,6 @@ export default function App() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-12">
-        {/* FIX: In-UI error banner instead of alert() */}
         <AnimatePresence>
           {error && (
             <motion.div
@@ -560,9 +551,7 @@ export default function App() {
                         className="appearance-none bg-white border border-black/5 rounded-xl px-4 py-2 pr-10 text-[10px] font-bold uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all cursor-pointer"
                       >
                         {cuisines.map(c => (
-                          <option key={c} value={c}>
-                            {c} Cuisine
-                          </option>
+                          <option key={c} value={c}>{c} Cuisine</option>
                         ))}
                       </select>
                       <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-neutral-400 pointer-events-none" />
@@ -645,7 +634,6 @@ export default function App() {
                   <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
                   <span className="text-sm font-medium">Back to suggestions</span>
                 </button>
-                {/* FIX: Use pre-computed isCurrentFavorite instead of inline favorites.some() × 3 */}
                 <button
                   onClick={e => toggleFavorite(selectedRecipe, e)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
@@ -661,12 +649,7 @@ export default function App() {
 
               <div className="relative h-72 rounded-3xl overflow-hidden shadow-xl">
                 <img
-                  src={
-                    selectedRecipe.imageUrl ||
-                    `https://loremflickr.com/1200/800/${encodeURIComponent(
-                      selectedRecipe.title.split(' ').slice(0, 3).join(',')
-                    )},food/all`
-                  }
+                  src={selectedRecipe.imageUrl || ''}
                   alt={selectedRecipe.title}
                   className={`w-full h-full object-cover transition-all duration-700 ${
                     isGeneratingImage ? 'scale-110 blur-sm opacity-50' : 'scale-100 blur-0 opacity-100'
@@ -680,9 +663,9 @@ export default function App() {
                     <div className="bg-white/90 backdrop-blur-md px-6 py-4 rounded-2xl shadow-2xl flex flex-col items-center gap-3">
                       <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
                       <div className="text-center">
-                        <div className="text-sm font-bold text-neutral-900">Generating HD Image</div>
+                        <div className="text-sm font-bold text-neutral-900">Loading Image</div>
                         <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest mt-0.5">
-                          Matching your recipe...
+                          Just a moment...
                         </div>
                       </div>
                     </div>
@@ -812,7 +795,7 @@ export default function App() {
                           m.toLowerCase().includes(ing.name.toLowerCase())
                       );
 
-                      const importanceColors = {
+                      const importanceColors: Record<string, string> = {
                         core: 'bg-rose-100 text-rose-700',
                         supporting: 'bg-rose-100 text-rose-700',
                         optional: 'bg-neutral-100 text-neutral-600',
@@ -830,9 +813,7 @@ export default function App() {
                           <div className="flex items-center gap-2 ml-auto">
                             {isMissing && (
                               <>
-                                <span
-                                  className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-md ${importanceColors[ing.importance]}`}
-                                >
+                                <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-md ${importanceColors[ing.importance]}`}>
                                   {displayImportance}
                                 </span>
                                 <span className="text-[10px] font-bold uppercase tracking-widest bg-rose-50 text-rose-500 px-2 py-0.5 rounded-md">
@@ -897,9 +878,7 @@ export default function App() {
                                   key={i}
                                   className="bg-white px-3 py-1 rounded-xl text-sm font-medium text-rose-600 shadow-sm flex items-center gap-1 border border-rose-100"
                                 >
-                                  <span className="font-bold">
-                                    {displayAmount} {unit}
-                                  </span>
+                                  <span className="font-bold">{displayAmount} {unit}</span>
                                   <span>{missingName}</span>
                                 </span>
                               );
