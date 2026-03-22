@@ -7,7 +7,7 @@ import { Recipe, Ingredient, AnalysisResult } from './types';
 
 // ---------------------------------------------------------------------------
 // Gemini image generation — runs directly in the browser using VITE_GEMINI_API_KEY.
-// No backend route needed. Uses gemini-2.0-flash-preview-image-generation.
+// Includes key ingredients in the prompt so Gemini generates the correct dish.
 // ---------------------------------------------------------------------------
 async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -16,11 +16,20 @@ async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
     return null;
   }
 
+  // Include core/supporting ingredients so Gemini knows exactly what to draw
+  const keyIngredients = recipe.ingredients
+    .filter(i => i.importance === 'core' || i.importance === 'supporting')
+    .slice(0, 4)
+    .map(i => i.name)
+    .join(', ');
+
   const prompt =
-    `Professional food photography of "${recipe.title}", a ${recipe.cuisine} dish. ` +
-    `Close-up shot, beautifully plated on a ceramic dish, soft natural side lighting, ` +
-    `shallow depth of field with blurred background, warm tones, appetising and vibrant colours. ` +
-    `Shot from a 45-degree overhead angle. No text, no people, no watermarks.`;
+    `Appetising professional food photography of "${recipe.title}", a ${recipe.cuisine} dish ` +
+    `made with ${keyIngredients}. ` +
+    `Beautifully plated on a clean white ceramic plate, hero shot from 45 degrees above, ` +
+    `soft warm natural window light from the left, shallow depth of field, ` +
+    `rich vibrant colours, garnished and styled for a Michelin-star restaurant menu. ` +
+    `Photorealistic, no text, no people, no watermarks, no cutlery in frame.`;
 
   try {
     const res = await fetch(
@@ -92,7 +101,8 @@ export default function App() {
   const [cuisineFilter, setCuisineFilter] = useState<string>('All');
   const [prepTimeFilter, setPrepTimeFilter] = useState<string>('All');
 
-  // Track which recipe IDs have already been queued for image generation
+  // Track which recipe IDs have already been queued for image generation.
+  // This persists across navigation so recipes are never re-queued.
   const generatingRef = useRef<Set<string>>(new Set());
 
   // Derive selectedRecipe from result + selectedRecipeId.
@@ -106,12 +116,12 @@ export default function App() {
     );
   }, [result, favorites, selectedRecipeId]);
 
-  // Show spinner only when there's truly no imageUrl yet.
-  // loremflickr placeholders from analyze.ts show immediately;
-  // once Gemini finishes, the real image swaps in seamlessly.
+  // Show spinner only while no real Gemini image exists yet.
+  // data: URI = real generated image → no spinner.
+  // loremflickr or empty → spinner shown.
   const isGeneratingImage = useMemo(() => {
     if (!selectedRecipe) return false;
-    return !selectedRecipe.imageUrl || selectedRecipe.imageUrl.startsWith('https://loremflickr.com');
+    return !selectedRecipe.imageUrl || !selectedRecipe.imageUrl.startsWith('data:');
   }, [selectedRecipe]);
 
   // Pre-compute isFavorite once, not inline 3× in JSX
@@ -124,7 +134,7 @@ export default function App() {
     localStorage.setItem('snapchef_favorites', JSON.stringify(favorites));
   }, [favorites]);
 
-  // Generate image for a single recipe using Gemini directly
+  // Generate image for a single recipe and update result state
   const generateImage = useCallback(async (recipe: Recipe) => {
     const newImageUrl = await generateRecipeImage(recipe);
     if (!newImageUrl) return null;
@@ -147,25 +157,28 @@ export default function App() {
     [generateImage]
   );
 
-  // Queue Gemini image generation for every recipe.
-  // loremflickr placeholders get replaced with real AI images in the background.
-  // Selected recipe is always generated first so the detail view loads fast.
+  // Queue image generation for recipes that don't yet have a real Gemini image.
+  // Key fix: only skip a recipe if it already has a data: URI (real generated image).
+  // loremflickr placeholders are always replaced. generatingRef ensures each recipe
+  // is only ever queued once — navigating back and forth never re-triggers generation.
   useEffect(() => {
     const generateAllImages = async () => {
       if (!result?.recipes?.length) return;
 
-      const toGenerate = result.recipes.filter(
-        r =>
-          (!r.imageUrl || r.imageUrl.startsWith('https://loremflickr.com')) &&
-          !generatingRef.current.has(r.id)
-      );
+      const toGenerate = result.recipes.filter(r => {
+        // Already has a real generated image — never re-generate
+        if (r.imageUrl && r.imageUrl.startsWith('data:')) return false;
+        // Already queued — skip
+        if (generatingRef.current.has(r.id)) return false;
+        return true;
+      });
 
       if (toGenerate.length === 0) return;
 
-      // Mark as queued immediately to prevent double-firing
+      // Mark all as queued immediately to prevent double-firing
       toGenerate.forEach(r => generatingRef.current.add(r.id));
 
-      // Selected recipe first for fast detail view
+      // Selected recipe first for fast detail view load
       const priority = toGenerate.filter(r => r.id === selectedRecipeId);
       const rest = toGenerate.filter(r => r.id !== selectedRecipeId);
 
@@ -202,6 +215,7 @@ export default function App() {
 
     setIsAnalyzing(true);
     setSelectedRecipeId(null);
+    // Reset generating tracker for a fresh analysis session
     generatingRef.current = new Set();
 
     try {
@@ -334,6 +348,30 @@ export default function App() {
     setError(null);
     generatingRef.current = new Set();
   };
+
+  // Immediately kick off generation for a recipe when the user taps its card,
+  // bypassing the background queue so the detail view loads as fast as possible.
+  const handleRecipeClick = useCallback((recipe: Recipe) => {
+    setSelectedRecipeId(recipe.id);
+    if (
+      (!recipe.imageUrl || !recipe.imageUrl.startsWith('data:')) &&
+      !generatingRef.current.has(recipe.id)
+    ) {
+      generatingRef.current.add(recipe.id);
+      generateRecipeImage(recipe).then(newImageUrl => {
+        if (!newImageUrl) return;
+        setResult(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            recipes: prev.recipes.map(r =>
+              r.id === recipe.id ? { ...r, imageUrl: newImageUrl } : r
+            ),
+          };
+        });
+      });
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-neutral-900 font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -630,7 +668,7 @@ export default function App() {
                       <RecipeCard
                         key={recipe.id}
                         recipe={recipe}
-                        onClick={() => setSelectedRecipeId(recipe.id)}
+                        onClick={() => handleRecipeClick(recipe)}
                         isFavorite={favorites.some(f => f.id === recipe.id)}
                         onToggleFavorite={e => toggleFavorite(recipe, e)}
                       />
