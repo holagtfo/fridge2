@@ -6,9 +6,9 @@ import { RecipeCard } from './components/RecipeCard';
 import { Recipe, Ingredient, AnalysisResult } from './types';
 
 // ---------------------------------------------------------------------------
-// Gemini image generation — runs directly in the browser.
-// Uses process.env.GEMINI_API_KEY which is injected by vite.config.ts via
-// the `define` block (maps GEMINI_API_KEY from .env.local at build/dev time).
+// Imagen 3 image generation — runs directly in the browser.
+// Uses imagen-3.0-generate-002 which is available on all standard Gemini API keys
+// and produces much better food photography than the flash preview model.
 // ---------------------------------------------------------------------------
 async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -17,7 +17,7 @@ async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
     return null;
   }
 
-  // Include core/supporting ingredients so Gemini draws the correct dish
+  // Include core/supporting ingredients so the model draws the correct dish
   const keyIngredients = recipe.ingredients
     .filter(i => i.importance === 'core' || i.importance === 'supporting')
     .slice(0, 4)
@@ -34,33 +34,36 @@ async function generateRecipeImage(recipe: Recipe): Promise<string | null> {
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+          instances: [{ prompt }],
+          parameters: {
+            sampleCount: 1,
+            aspectRatio: '4:3',
+          },
         }),
       }
     );
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      console.error('Gemini image generation failed:', err);
+      const errText = await res.text().catch(() => 'unknown error');
+      console.error('Imagen generation failed:', errText);
       return null;
     }
 
     const data = await res.json();
-    const parts = data?.candidates?.[0]?.content?.parts ?? [];
-    const imagePart = parts.find((p: any) => p.inlineData?.mimeType?.startsWith('image/'));
+    const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
+    const mimeType = data?.predictions?.[0]?.mimeType ?? 'image/png';
 
-    if (!imagePart) {
-      console.error('No image part in Gemini response');
+    if (!b64) {
+      console.error('No image in Imagen response', data);
       return null;
     }
 
-    return `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+    return `data:${mimeType};base64,${b64}`;
   } catch (err) {
     console.error(`Image generation error for "${recipe.title}":`, err);
     return null;
@@ -117,7 +120,7 @@ export default function App() {
     );
   }, [result, favorites, selectedRecipeId]);
 
-  // Show spinner only while no real Gemini image exists yet.
+  // Show spinner only while no real Imagen image exists yet.
   // data: URI = real generated image → no spinner.
   // loremflickr or empty → spinner shown.
   const isGeneratingImage = useMemo(() => {
@@ -158,7 +161,7 @@ export default function App() {
     [generateImage]
   );
 
-  // Queue image generation for recipes that don't yet have a real Gemini image.
+  // Queue image generation for recipes that don't yet have a real Imagen image.
   // Only skips a recipe if it already has a data: URI (real generated image).
   // loremflickr placeholders are always replaced.
   // generatingRef ensures each recipe is only ever queued once —
@@ -168,25 +171,20 @@ export default function App() {
       if (!result?.recipes?.length) return;
 
       const toGenerate = result.recipes.filter(r => {
-        // Already has a real generated image — never re-generate
         if (r.imageUrl && r.imageUrl.startsWith('data:')) return false;
-        // Already queued — skip
         if (generatingRef.current.has(r.id)) return false;
         return true;
       });
 
       if (toGenerate.length === 0) return;
 
-      // Mark all as queued immediately to prevent double-firing
       toGenerate.forEach(r => generatingRef.current.add(r.id));
 
-      // Selected recipe first for fast detail view load
       const priority = toGenerate.filter(r => r.id === selectedRecipeId);
       const rest = toGenerate.filter(r => r.id !== selectedRecipeId);
 
       if (priority.length) await generateBatch(priority);
 
-      // Rest in pairs to avoid rate-limiting
       for (let i = 0; i < rest.length; i += 2) {
         await generateBatch(rest.slice(i, i + 2));
       }
@@ -217,7 +215,6 @@ export default function App() {
 
     setIsAnalyzing(true);
     setSelectedRecipeId(null);
-    // Reset generating tracker for a fresh analysis session
     generatingRef.current = new Set();
 
     try {
